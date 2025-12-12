@@ -77,12 +77,139 @@ struct Vec3 {
 
 // 3D dot product
 Fixed24 dot(Vec3 &l, Vec3 &r) {
-  return (l.x * r.x) + (l.y * r.y) + (l.z * r.z);
+  Fixed24 out;
+
+  // locals must have storage so inline asm can reference them
+  int24_t lx = l.x.n;
+  int24_t ly = l.y.n;
+  int24_t lz = l.z.n;
+
+  int24_t rx = r.x.n;
+  int24_t ry = r.y.n;
+  int24_t rz = r.z.n;
+
+  int24_t result;
+
+  __asm__
+      ; ---- x*x ----
+      ld hl, (_lx)
+      push hl
+      ld hl, (_rx)
+      push hl
+      call _fp_mul
+      pop bc
+      pop bc
+      ld de, hl        ; DE = partial sum
+
+      ; ---- y*y ----
+      ld hl, (_ly)
+      push hl
+      ld hl, (_ry)
+      push hl
+      call _fp_mul
+      pop bc
+      pop bc
+      add hl, de       ; accumulate
+      ld de, hl
+
+      ; ---- z*z ----
+      ld hl, (_lz)
+      push hl
+      ld hl, (_rz)
+      push hl
+      call _fp_mul
+      pop bc
+      pop bc
+      add hl, de       ; final sum
+
+      ld (_result), hl
+  __endasm;
+
+  out.n = result;
+  return out;
 }
 
 // 3D cross product
-inline Vec3 cross(Vec3 l, Vec3 r) {
-  return Vec3(l.y * r.z - l.z * r.y, l.z * r.x - l.x * r.z, l.x * r.y - l.y * r.x);
+Vec3 cross(Vec3 l, Vec3 r) {
+  Vec3 out;
+
+  int24_t lx = l.x.n, ly = l.y.n, lz = l.z.n;
+  int24_t rx = r.x.n, ry = r.y.n, rz = r.z.n;
+
+  int24_t ox, oy, oz;
+
+  __asm__
+      ; ---------------- X = ly*rz - lz*ry ----------------
+      ld hl, (_ly)
+      push hl
+      ld hl, (_rz)
+      push hl
+      call _fp_mul
+      pop bc
+      pop bc
+      ld de, hl        ; DE = ly*rz
+
+      ld hl, (_lz)
+      push hl
+      ld hl, (_ry)
+      push hl
+      call _fp_mul
+      pop bc
+      pop bc
+
+      or a
+      sbc hl, de
+      ld (_ox), hl
+
+      ; ---------------- Y = lz*rx - lx*rz ----------------
+      ld hl, (_lz)
+      push hl
+      ld hl, (_rx)
+      push hl
+      call _fp_mul
+      pop bc
+      pop bc
+      ld de, hl
+
+      ld hl, (_lx)
+      push hl
+      ld hl, (_rz)
+      push hl
+      call _fp_mul
+      pop bc
+      pop bc
+
+      or a
+      sbc hl, de
+      ld (_oy), hl
+
+      ; ---------------- Z = lx*ry - ly*rx ----------------
+      ld hl, (_lx)
+      push hl
+      ld hl, (_ry)
+      push hl
+      call _fp_mul
+      pop bc
+      pop bc
+      ld de, hl
+
+      ld hl, (_ly)
+      push hl
+      ld hl, (_rx)
+      push hl
+      call _fp_mul
+      pop bc
+      pop bc
+
+      or a
+      sbc hl, de
+      ld (_oz), hl
+  __endasm;
+
+  out.x.n = ox;
+  out.y.n = oy;
+  out.z.n = oz;
+  return out;
 }
 
 /* Prints the three components of this vector

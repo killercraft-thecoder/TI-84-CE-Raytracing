@@ -1,13 +1,5 @@
 #pragma once
 
-/* Implements a data structure and functions to represent planes
- * and compute intersections with them from view rays
- *
- * Planes can register the ray origin (camera position) before
- * computing intersections to avoid redundant computations when
- * the camera position is constant
- */
-
 #include "vector.h"
 #include "ray.h"
 #include "color.h"
@@ -15,77 +7,103 @@
 #include "lightmap.h"
 
 struct Plane {
-  Vec3 point;
-  Vec3 normal;
-  Spectrum albedo;
-  LightMap light_map;
-  Texture* texture;
+    Vec3 point;
+    Vec3 normal;
+    Spectrum albedo;
+    LightMap light_map;
+    Texture* texture;
 
-  // Precomputed value to speed up the math
-  Fixed24 numerator;
+    // Precomputed value for fast intersection
+    Fixed24 numerator;
 
-  Plane(Vec3 _point, Vec3 _normal, Color _color, Texture *_texture) {
-    point   = _point;
-    normal  = _normal;
-    albedo = Spectrum(_color);
-    texture = _texture;
-  }
+    // Optional bounding box for intersection limits
+    Fixed24 min_bound;
+    Fixed24 max_bound;
 
-  /* Precompute some of the ray intersection math which is not dependent on
-   * ray direction. This only needs updated whenever the camera position
-   * is changed
-   */
-  void register_camera(Vec3 &origin) {
-    Vec3 offset = point - origin;
+    Plane(Vec3 _point, Vec3 _normal, Color _color, Texture *_texture)
+        : point(_point),
+          normal(_normal),
+          albedo(_color),
+          texture(_texture),
+          min_bound(Fixed24(-0.01f)),
+          max_bound(Fixed24(2.01f)) {}
 
-    numerator = dot(offset, normal);
-  }
+    // Allow custom bounds
+    void set_bounds(Fixed24 minv, Fixed24 maxv) {
+        min_bound = minv;
+        max_bound = maxv;
+    }
 
-  /* Compute the t parameter where this ray intersects with the plane.
-   * t < 0 implies no intersection
-   * 
-   * Requires register_camera to have been called earlier with the correct
-   * camera position.
-   */
-  Fixed24 ray_intersect_fast(Ray &r) {
-    Fixed24 t = div(numerator, dot(r.dir, normal));
+    // Precompute numerator = dot(point - origin, normal)
+    void register_camera(const Vec3 &origin) {
+        // Avoid constructing a temporary Vec3
+        Fixed24 ox = point.x - origin.x;
+        Fixed24 oy = point.y - origin.y;
+        Fixed24 oz = point.z - origin.z;
 
-    Vec3 hit_pos = r.at(t);
-    hit_pos = hit_pos - point;
+        numerator = fp_dot3(ox.n, oy.n, oz.n,
+                            normal.x.n, normal.y.n, normal.z.n);
+    }
 
-    // Restrict intersections to the 2x2x2 scene region
-    if (hit_pos.x > Fixed24(2.01f)) return Fixed24(-1);
-    if (hit_pos.y > Fixed24(2.01f)) return Fixed24(-1);
-    if (hit_pos.z > Fixed24(2.01f)) return Fixed24(-1);
-    if (hit_pos.x < Fixed24(-.01f)) return Fixed24(-1);
-    if (hit_pos.y < Fixed24(-.01f)) return Fixed24(-1);
-    if (hit_pos.z < Fixed24(-.01f)) return Fixed24(-1);
+    // Fast intersection using precomputed numerator
+    Fixed24 ray_intersect_fast(const Ray &r) {
+        // Compute denominator = dot(r.dir, normal)
+        Fixed24 denom;
+        denom.n = fp_dot3(r.dir.x.n, r.dir.y.n, r.dir.z.n,
+                          normal.x.n, normal.y.n, normal.z.n);
 
-    return t;
-  }
+        // Avoid division by zero or negative t
+        if (denom.n == 0) return Fixed24(-1);
 
-  /* Compute the t parameter where this ray intersects with the plane.
-   * t < 0 implies no intersection
-   *
-   * This implementation does not rely on precomputed values, thus it
-   * can be used for any ray r, although it will be somewhat slower
-   */
-  Fixed24 ray_intersect(Ray& r) {
-    Vec3 offset = point - r.origin;
+        Fixed24 t = div(numerator, denom);
+        if (t.n <= 0) return Fixed24(-1);
 
-    Fixed24 t = div(dot(offset, normal), dot(r.dir, normal));
+        // Compute hit position directly without constructing Vec3
+        Vec3 hit = r.origin + (r.dir * t);
 
-    Vec3 hit_pos = r.at(t);
-    hit_pos = hit_pos - point;
+        // Offset from plane point
+        hit.x -= point.x;
+        hit.y -= point.y;
+        hit.z -= point.z;
 
-    // Restrict intersections to the 2x2x2 scene region
-    if (hit_pos.x > Fixed24(2.01f)) return Fixed24(-1);
-    if (hit_pos.y > Fixed24(2.01f)) return Fixed24(-1);
-    if (hit_pos.z > Fixed24(2.01f)) return Fixed24(-1);
-    if (hit_pos.x < Fixed24(-.01f)) return Fixed24(-1);
-    if (hit_pos.y < Fixed24(-.01f)) return Fixed24(-1);
-    if (hit_pos.z < Fixed24(-.01f)) return Fixed24(-1);
+        // Fast bounds check
+        if (hit.x < min_bound || hit.x > max_bound) return Fixed24(-1);
+        if (hit.y < min_bound || hit.y > max_bound) return Fixed24(-1);
+        if (hit.z < min_bound || hit.z > max_bound) return Fixed24(-1);
 
-    return t;
-  }
+        return t;
+    }
+
+    // Full intersection (no precomputed numerator)
+    Fixed24 ray_intersect(const Ray &r) {
+        // offset = point - r.origin
+        Fixed24 ox = point.x - r.origin.x;
+        Fixed24 oy = point.y - r.origin.y;
+        Fixed24 oz = point.z - r.origin.z;
+
+        Fixed24 num;
+        num.n = fp_dot3(ox.n, oy.n, oz.n,
+                        normal.x.n, normal.y.n, normal.z.n);
+
+        Fixed24 denom;
+        denom.n = fp_dot3(r.dir.x.n, r.dir.y.n, r.dir.z.n,
+                          normal.x.n, normal.y.n, normal.z.n);
+
+        if (denom.n == 0) return Fixed24(-1);
+
+        Fixed24 t = div(num, denom);
+        if (t.n <= 0) return Fixed24(-1);
+
+        Vec3 hit = r.origin + (r.dir * t);
+
+        hit.x -= point.x;
+        hit.y -= point.y;
+        hit.z -= point.z;
+
+        if (hit.x < min_bound || hit.x > max_bound) return Fixed24(-1);
+        if (hit.y < min_bound || hit.y > max_bound) return Fixed24(-1);
+        if (hit.z < min_bound || hit.z > max_bound) return Fixed24(-1);
+
+        return t;
+    }
 };
